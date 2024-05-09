@@ -134,8 +134,8 @@ class Agent:
                     }, ckpt_path)      
         
     def load_checkpoint(self):
-        checkpoint = torch.load("111034521_hw4_data")
-        weight = checkpoint['model']
+        weight = torch.load("111034521_hw4_data")
+        
         self.actor.load_state_dict(weight)
 
     def trans_observation(self, observation):
