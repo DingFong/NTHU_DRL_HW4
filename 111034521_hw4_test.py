@@ -56,7 +56,7 @@ class Agent:
 
         
         _, _, action = self.actor.sample(state)
-        action = torch.clip(input = action, min = 0, max = 1)
+        action = torch.clamp(input = action, min = 0, max = 1)
         
 
         return action.detach().cpu().numpy()[0].flatten()
