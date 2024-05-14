@@ -18,26 +18,32 @@ class Actor(nn.Module):
         
         self.linear1 = nn.Linear(num_inputs, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
-
+        # self.linear3 = nn.Linear(hidden_dim, hidden_dim*2)
+        
         self.mean_linear = nn.Linear(hidden_dim, num_actions)
         self.log_std_linear = nn.Linear(hidden_dim, num_actions)
+
+        # self.mean_linear = nn.Linear(hidden_dim*2, num_actions)
+        # self.log_std_linear = nn.Linear(hidden_dim*2, num_actions)
 
         self.apply(weights_init_)
 
         # action rescaling
-        if action_space is None:
-            self.action_scale = torch.tensor(1.)
-            self.action_bias = torch.tensor(0.)
-        else:
-            self.action_scale = torch.FloatTensor(
-                (action_space.high - action_space.low) / 2.)
-            self.action_bias = torch.FloatTensor(
-                (action_space.high + action_space.low) / 2.)
-        
+        # if action_space is None:
+        self.action_scale = torch.tensor(1.)
+        self.action_bias = torch.tensor(0.)
+        # else:
+        #     self.action_scale = torch.FloatTensor(
+        #         (action_space.high - action_space.low) / 2.)
+        #     self.action_bias = torch.FloatTensor(
+        #         (action_space.high + action_space.low) / 2.)
+        #     print(f'action space range, scale: {self.action_scale}, bias: {self.action_bias}')
 
     def forward(self, state):
         x = F.relu(self.linear1(state))
         x = F.relu(self.linear2(x))
+        # x = F.relu(self.linear3(x))
+
         mean = self.mean_linear(x)
         log_std = self.log_std_linear(x)
         log_std = torch.clamp(log_std, min=LOG_SIG_MIN, max=LOG_SIG_MAX)
@@ -45,6 +51,7 @@ class Actor(nn.Module):
 
     def sample(self, state):
         mean, log_std = self.forward(state)
+        
         std = log_std.exp()
         normal = Normal(mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))

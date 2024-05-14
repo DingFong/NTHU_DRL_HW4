@@ -1,68 +1,60 @@
 import torch.nn.functional as F
 
-from model.critic import Critic
-from model.actor import Actor
+from .critic import Critic
+from .actor import Actor
+from .exploration import DisagreementExploration
 
 import torch
 import torch.optim as optim
 
-from model.replay_buffer import Memory
+from .replay_buffer import Memory, PrioritizedReplayBuffer
 import os
-import numpy as np
 
 # SAC (Soft-Actor-Critic)
 class Agent:
-    def __init__(self):
-        action_space = np.zeros(22)
+    def __init__(self, observation_space, action_space, args):
         self.action_space = action_space
-        # self.gamma = args.gamma
-        # self.tau = args.tau
-        # self.alpha = args.alpha
-        num_inputs = 339    
-        hidden_size = 256
-        
+        self.gamma = args.gamma
+        self.tau = args.tau
+        self.alpha = args.alpha
 
-        # self.target_update_interval = args.target_update_interval
-        # self.automatic_entropy_tuning = args.automatic_entropy_tuning
+        self.target_update_interval = args.target_update_interval
+        self.automatic_entropy_tuning = args.automatic_entropy_tuning
 
-        self.device = "cpu"
+        self.device = torch.device("cuda" if args.cuda else "cpu")
 
-        # self.critic = Critic(num_inputs, action_space.shape[0], hidden_size).to(device=self.device)
-        # self.critic_optim = optim.Adam(self.critic.parameters(), lr=args.lr)
+        self.critic = Critic(observation_space.shape[0], action_space.shape[0], args.hidden_size).to(device=self.device)
+        self.critic_optim = optim.Adam(self.critic.parameters(), lr=args.lr)
 
-        # self.critic_target = Critic(num_inputs, action_space.shape[0], hidden_size).to(self.device)
-        # self.critic_target.load_state_dict(self.critic.state_dict())
+        self.critic_target = Critic(observation_space.shape[0], action_space.shape[0], args.hidden_size).to(self.device)
+        self.critic_target.load_state_dict(self.critic.state_dict())
 
         
-        # if self.automatic_entropy_tuning == True:
-        #     self.target_entropy = -torch.prod(torch.Tensor(action_space.shape[0]).to(self.device)).item()
-        #     self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
-        #     self.alpha_optim = optim.Adam([self.log_alpha], lr=args.lr)
+        if self.automatic_entropy_tuning == True:
+            target = -torch.prod(torch.Tensor(action_space.shape))
+            print(target)
+            self.target_entropy = target.to(self.device).item()
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+            self.alpha_optim = optim.Adam([self.log_alpha], lr=args.lr)
 
-        self.actor = Actor(num_inputs, action_space.shape[0], hidden_size).to(self.device)
-        self.load_checkpoint()
-        # self.actor_optim = optim.Adam(self.actor.parameters(), lr=args.lr)
+        self.actor = Actor(observation_space.shape[0], action_space.shape[0], args.hidden_size, action_space=action_space).to(self.device)
+        self.actor_optim = optim.Adam(self.actor.parameters(), lr=args.lr)
 
-        # self.memory = Memory(args.memory_capacity)
-        # self.batch_size = args.batch_size
+        # Prioritized replay bufffer
+        self.prioritized_replay = False
+        if args.prioritized_replay == True:
+            self.prioritized_replay = True
+            self.momory = PrioritizedReplayBuffer(args.memory_capacity)
+        else:
+            self.memory = Memory(args.memory_capacity)
 
-    def soft_update(self, local_model, target_model, tau):
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
 
-    def act(self, observation):
-        observation = self.trans_observation(observation)
-        state = torch.FloatTensor(observation).to(self.device).unsqueeze(0)
+        self.batch_size = args.batch_size
 
-        
-        _, _, action = self.actor.sample(state)
-        action = torch.clamp(input = action, min = 0, max = 1)
-        
+        if args.exploration == True:
+            # only model the pose information of the state space
 
-        return action.detach().cpu().numpy()[0]
-    
-    def update_memory(self, state, action, reward, next_state, done):
-        self.memory.push(state, action, reward, next_state, done)
+            self.exploration = DisagreementExploration(observation_space, action_space, args.n_state_predictor, args.hidden_sizes, args)
 
     def train_exploration(self):
         # sample a batch of transitions from the replay buffer
@@ -77,6 +69,22 @@ class Agent:
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
 
+    def select_action(self, state, evaluate = False):
+        state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+
+        if not evaluate:
+            # Sample action from Gaussian policy
+            action, _, _ = self.actor.sample(state)
+        else:
+            _, _, action = self.actor.sample(state)
+            action = torch.clamp(action, 0, 1)
+        
+        return action.detach().cpu().numpy()[0]
+    
+    def update_memory(self, state, action, reward, next_state, done):
+        self.memory.push(state, action, reward, next_state, done)
+
+    
     def update_params(self, updates):
         if self.prioritized_replay == False:
             state_batch, action_batch, reward_batch, next_state_batch, mask_batch, indices = self.memory.sample(batch_size=self.batch_size)
@@ -156,40 +164,4 @@ class Agent:
                     'critic_target': self.critic_target.state_dict(),
                     'actor_optim': self.actor_optim.state_dict(),
                     'critic_optim': self.critic_optim.state_dict()
-                    }, ckpt_path)           
-        
-    def load_checkpoint(self):
-        weight = torch.load("111034521_hw4_data")
-        self.actor.load_state_dict(weight)
-
-    def trans_observation(self, observation):
-        res = []
-
-        # target velocity field (in body frame)
-        res += observation['v_tgt_field'].flatten().tolist()
-
-        res.append(observation['pelvis']['height'])
-        res.append(observation['pelvis']['pitch'])
-        res.append(observation['pelvis']['roll'])
-        res.append(observation['pelvis']['vel'][0])
-        res.append(observation['pelvis']['vel'][1])
-        res.append(observation['pelvis']['vel'][2])
-        res.append(observation['pelvis']['vel'][3])
-        res.append(observation['pelvis']['vel'][4])
-        res.append(observation['pelvis']['vel'][5])
-
-        for leg in ['r_leg', 'l_leg']:
-            res += observation[leg]['ground_reaction_forces']
-            res.append(observation[leg]['joint']['hip_abd'])
-            res.append(observation[leg]['joint']['hip'])
-            res.append(observation[leg]['joint']['knee'])
-            res.append(observation[leg]['joint']['ankle'])
-            res.append(observation[leg]['d_joint']['hip_abd'])
-            res.append(observation[leg]['d_joint']['hip'])
-            res.append(observation[leg]['d_joint']['knee'])
-            res.append(observation[leg]['d_joint']['ankle'])
-            for MUS in ['HAB', 'HAD', 'HFL', 'GLU', 'HAM', 'RF', 'VAS', 'BFSH', 'GAS', 'SOL', 'TA']:
-                res.append(observation[leg][MUS]['f'])
-                res.append(observation[leg][MUS]['l'])
-                res.append(observation[leg][MUS]['v'])
-        return res
+                    }, ckpt_path)      
